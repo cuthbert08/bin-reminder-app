@@ -2,3 +2,4 @@ Flask
 requests
 twilio
 python-dotenv
+vercel-kv
