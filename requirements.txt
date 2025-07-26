@@ -2,5 +2,5 @@ Flask
 requests
 twilio
 python-dotenv
-vercel-kv
+upstash-redis
 redis
