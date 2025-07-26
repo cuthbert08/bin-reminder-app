@@ -10,5 +10,11 @@
         "src": "/(.*)",
         "dest": "app.py"
       }
+    ],
+    "crons": [
+      {
+        "path": "/api/trigger-reminder",
+        "schedule": "0 2 * * 3"
+      }
     ]
   }
