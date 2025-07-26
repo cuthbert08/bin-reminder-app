@@ -39,6 +39,7 @@ def add_resident():
     flats.append(new_resident)
     kv.set('flats', flats)
     
+    # Initialize turn index if this is the first resident
     if kv.get('current_turn_index') is None:
         kv.set('current_turn_index', 0)
         
@@ -121,11 +122,16 @@ def trigger_reminder():
 
         last_date_str = kv.get('last_reminder_date') or "2000-01-01"
         last_date = date.fromisoformat(last_date_str)
-        # Cron job check: prevent sending more than once every 6 days
         if request.method == 'GET' and (date.today() - last_date).days < 6:
              return f"Reminder already sent on {last_date_str}.", 200
 
+        # Bug Fix: Provide a default value for current_index
         current_index = kv.get('current_turn_index') or 0
+        
+        # Ensure index is not out of bounds
+        if current_index >= len(flats):
+            current_index = 0
+
         person_on_duty = flats[current_index]
         
         # Check for a custom message from the frontend
