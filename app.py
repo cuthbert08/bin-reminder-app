@@ -6,8 +6,12 @@ from vercel_kv import KV # Corrected: Uppercase KV
 from datetime import date
 import uuid
 
-# Create an instance of the KV client
-kv = KV()
+# --- Explicitly initialize the KV client with credentials from environment variables ---
+# This is the main fix.
+kv = KV(
+    url=os.environ.get('KV_URL'),
+    token=os.environ.get('KV_REST_API_TOKEN')
+)
 
 # Import our sending functions
 from send_whatsapp import send_whatsapp_message
