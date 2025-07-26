@@ -4,3 +4,4 @@ twilio
 python-dotenv
 upstash-redis
 redis
+Flask-Cors
