@@ -2,9 +2,12 @@
 
 import os
 from flask import Flask, jsonify, request
-from vercel_kv import kv
+from vercel_kv import KV # Corrected: Uppercase KV
 from datetime import date
 import uuid
+
+# Create an instance of the KV client
+kv = KV()
 
 # Import our sending functions
 from send_whatsapp import send_whatsapp_message
