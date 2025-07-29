@@ -9,3 +9,12 @@ Flask-Cors
 Werkzeug
 PyJWT
 vercel-blob
+Flask
+Flask-Cors
+PyJWT
+Werkzeug
+gunicorn
+python-dotenv
+upstash-redis
+vercel-blob
+sendgrid
