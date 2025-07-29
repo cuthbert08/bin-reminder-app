@@ -78,13 +78,23 @@ def login():
 
 # --- HELPER FUNCTIONS ---
 
-def add_log_entry(message, user_email="System"):
+def add_log_entry(user, action, details):
+    """Adds a structured log entry to the database."""
     logs_json = redis.get('logs')
     logs = json.loads(logs_json) if logs_json else []
-    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    new_entry = f"[{timestamp}] ({user_email}) {message}"
+    
+    new_entry = {
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.utcnow().isoformat(),
+        "user": user,
+        "action": action,
+        "details": details
+    }
+    
     logs.insert(0, new_entry)
-    if len(logs) > 100: logs = logs[:100]
+    if len(logs) > 100:  # Keep the last 100 log entries
+        logs = logs[:100]
+        
     redis.set('logs', json.dumps(logs))
 
 def generate_text_message(template, resident, settings, subject=None):
@@ -108,26 +118,101 @@ def generate_text_message(template, resident, settings, subject=None):
         return f"{personalized_body}{footer}"
 
 def generate_html_message(template, resident, settings, subject="Bin Duty Reminder"):
-    """Generates a professional HTML email with personalization and a standard structure."""
+    """Generates a professional and beautiful HTML email."""
     first_name = resident.get("name", "").split(" ")[0]
     flat_number = resident.get("flat_number", "")
     owner_name = settings.get('owner_name', 'Admin')
     owner_number = settings.get('owner_contact_number', '')
     report_link = settings.get('report_issue_link', '#')
 
-    # Personalize the main message
-    personalized_body = template.replace("{first_name}", first_name).replace("{flat_number}", flat_number)
+    # Personalize the main message, ensuring newlines are converted to <br> tags
+    personalized_body = template.replace("{first_name}", first_name).replace("{flat_number}", flat_number).replace('\n', '<br>')
     
     html = f"""
-    <div style="border: 1px solid #ddd; padding: 20px; font-family: sans-serif; max-width: 600px;">
-        <h2 style="color: #333;">{subject}</h2>
-        <p style="color: #555; line-height: 1.6;">{personalized_body.replace(chr(10), "<br>")}</p>
-        <a href="{report_link}" style="display: inline-block; padding: 12px 18px; margin-top: 15px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
-            Report an Issue
-        </a>
-        <hr style="margin-top: 25px; border: none; border-top: 1px solid #eee;">
-        <p style="font-size: 12px; color: #888;">This is an automated message. Contact {owner_name} at {owner_number} for enquiries.</p>
-    </div>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{subject}</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap');
+            body {{
+                font-family: 'Poppins', sans-serif;
+                background-color: #f4f4f4;
+                color: #333;
+                margin: 0;
+                padding: 0;
+            }}
+            .container {{
+                max-width: 600px;
+                margin: 20px auto;
+                background-color: #ffffff;
+                border-radius: 8px;
+                overflow: hidden;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+                border: 1px solid #e8e8e8;
+            }}
+            .header {{
+                background-color: #4A90E2; /* A nice blue */
+                color: #ffffff;
+                padding: 30px;
+                text-align: center;
+            }}
+            .header h1 {{
+                margin: 0;
+                font-size: 24px;
+            }}
+            .content {{
+                padding: 30px;
+                line-height: 1.7;
+                color: #555;
+            }}
+            .content p {{
+                margin: 0 0 15px 0;
+            }}
+            .button-container {{
+                text-align: center;
+                margin-top: 25px;
+            }}
+            .button {{
+                display: inline-block;
+                padding: 12px 25px;
+                background-color: #50C878; /* A friendly green */
+                color: #ffffff;
+                text-decoration: none;
+                border-radius: 50px;
+                font-weight: 600;
+                font-size: 16px;
+            }}
+            .footer {{
+                padding: 20px;
+                font-size: 12px;
+                color: #888;
+                text-align: center;
+                background-color: #f9f9f9;
+                border-top: 1px solid #e8e8e8;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>{subject}</h1>
+            </div>
+            <div class="content">
+                <p>Hi {first_name},</p>
+                <p>{personalized_body}</p>
+                <div class="button-container">
+                    <a href="{report_link}" class="button">Report an Issue</a>
+                </div>
+            </div>
+            <div class="footer">
+                <p>This is an automated message. For urgent enquiries, please contact {owner_name} at {owner_number}.</p>
+            </div>
+        </div>
+    </body>
+    </html>
     """
     return html
 
@@ -163,7 +248,10 @@ def report_issue():
     if owner_whatsapp: send_whatsapp_message(owner_whatsapp, notification_message)
     if owner_email: send_email_message(owner_email, "New Maintenance Issue Reported", notification_message)
     
-    add_log_entry(f"New issue reported by {new_issue['reported_by']}.")
+    add_log_entry("Public", "Issue Reported", {
+        "reported_by": new_issue['reported_by'],
+        "description": new_issue['description']
+    })
     return jsonify({"message": "Issue reported successfully."}), 201
 
 # --- PROTECTED ROUTES ---
@@ -194,7 +282,7 @@ def get_dashboard_info(current_user):
         }
         return jsonify(dashboard_data)
     except Exception as e:
-        add_log_entry(f"ERROR fetching dashboard: {str(e)}", current_user['email'])
+        add_log_entry(current_user['email'], "Error", {"message": f"Error fetching dashboard: {str(e)}"})
         return jsonify({"error": str(e)}), 500
 
 # RESIDENTS
@@ -221,7 +309,7 @@ def handle_residents(current_user):
             }
             flats.append(new_resident)
             redis.set('flats', json.dumps(flats))
-            add_log_entry(f"Admin '{current_user['email']}' added new resident: {new_resident['name']}", current_user['email'])
+            add_log_entry(current_user['email'], "Resident Added", {"name": new_resident['name']})
             return jsonify(new_resident), 201
         return add(current_user)
 
@@ -247,7 +335,7 @@ def handle_specific_resident(current_user, resident_id):
                 break
         if not resident_found: return jsonify({"error": "Resident not found"}), 404
         redis.set('flats', json.dumps(flats))
-        add_log_entry(f"Admin '{current_user['email']}' updated details for resident: {updated_name}", current_user['email'])
+        add_log_entry(current_user['email'], "Resident Updated", {"name": updated_name})
         return jsonify({"message": "Resident updated successfully"})
 
     if request.method == 'DELETE':
@@ -256,7 +344,7 @@ def handle_specific_resident(current_user, resident_id):
         flats = [flat for flat in flats if flat.get("id") != resident_id]
         if len(flats) == original_len: return jsonify({"error": "Resident not found"}), 404
         redis.set('flats', json.dumps(flats))
-        add_log_entry(f"Admin '{current_user['email']}' deleted resident: {resident_name}", current_user['email'])
+        add_log_entry(current_user['email'], "Resident Deleted", {"name": resident_name})
         return jsonify({"message": "Resident deleted successfully"})
 
 # ISSUES
@@ -290,7 +378,7 @@ def update_issue(current_user, issue_id):
         return jsonify({"error": "Issue not found"}), 404
         
     redis.set('issues', json.dumps(issues))
-    add_log_entry(f"Admin '{current_user['email']}' updated issue {issue_id} to '{new_status}'", current_user['email'])
+    add_log_entry(current_user['email'], "Issue Status Updated", {"issue_id": issue_id, "new_status": new_status})
     return jsonify({"message": "Issue status updated successfully"})
 
 # LOGS
@@ -329,7 +417,7 @@ def handle_admins(current_user):
         }
         admins.append(new_admin)
         redis.set('admins', json.dumps(admins))
-        add_log_entry(f"Superuser '{current_user['email']}' created new admin: {new_admin['email']}", current_user['email'])
+        add_log_entry(current_user['email'], "Admin Created", {"email": new_admin['email'], "role": new_admin['role']})
         
         safe_new_admin = {k: v for k, v in new_admin.items() if k != 'password_hash'}
         return jsonify(safe_new_admin), 201
@@ -344,17 +432,19 @@ def handle_specific_admin(current_user, admin_id):
     if request.method == 'PUT':
         data = request.get_json()
         admin_found = False
+        updated_email = ""
         for i, admin in enumerate(admins):
             if admin.get("id") == admin_id:
                 if 'role' in data:
                     admins[i]['role'] = data['role']
+                    updated_email = admins[i]['email']
                 if 'password' in data and data['password']:
                     admins[i]['password_hash'] = generate_password_hash(data['password'], method='pbkdf2:sha256')
                 admin_found = True
                 break
         if not admin_found: return jsonify({"error": "Admin not found"}), 404
         redis.set('admins', json.dumps(admins))
-        add_log_entry(f"Superuser '{current_user['email']}' updated details for admin ID: {admin_id}", current_user['email'])
+        add_log_entry(current_user['email'], "Admin Updated", {"email": updated_email})
         return jsonify({"message": "Admin updated successfully"})
 
     if request.method == 'DELETE':
@@ -366,7 +456,7 @@ def handle_specific_admin(current_user, admin_id):
         admins = [admin for admin in admins if admin.get("id") != admin_id]
         if len(admins) == original_len: return jsonify({"error": "Admin not found"}), 404
         redis.set('admins', json.dumps(admins))
-        add_log_entry(f"Superuser '{current_user['email']}' deleted admin: {admin_email}", current_user['email'])
+        add_log_entry(current_user['email'], "Admin Deleted", {"email": admin_email})
         return jsonify({"message": "Admin deleted successfully"})
 
 # SETTINGS
@@ -382,7 +472,7 @@ def handle_settings(current_user):
     if request.method == 'PUT':
         new_settings = request.get_json()
         redis.set('settings', json.dumps(new_settings))
-        add_log_entry(f"Superuser '{current_user['email']}' updated system settings.", current_user['email'])
+        add_log_entry(current_user['email'], "Settings Updated", {"settings": list(new_settings.keys())})
         return jsonify(new_settings)
 
 # CORE ACTIONS
@@ -417,7 +507,7 @@ def trigger_reminder(current_user):
     if contact_info.get('email'): send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
     
     redis.set('last_reminder_date', date.today().isoformat())
-    add_log_entry(f"Admin '{current_user['email']}' manually triggered reminder for {person_on_duty['name']}.", current_user['email'])
+    add_log_entry(current_user['email'], "Reminder Sent", {"recipient": person_on_duty['name']})
     return jsonify({"message": f"Reminder sent to {person_on_duty['name']}."})
 
 @app.route('/api/announcements', methods=['POST'])
@@ -435,7 +525,9 @@ def send_announcement(current_user):
     settings_json = redis.get('settings')
     settings = json.loads(settings_json) if settings_json else {}
     
+    recipient_names = []
     for resident in flats:
+        recipient_names.append(resident['name'])
         # Generate formatted messages for each resident
         text_message = generate_text_message(message_template, resident, settings, subject)
         html_message = generate_html_message(message_template, resident, settings, subject)
@@ -445,7 +537,11 @@ def send_announcement(current_user):
         if contact_info.get('sms'): send_sms_message(contact_info['sms'], text_message)
         if contact_info.get('email'): send_email_message(contact_info['email'], subject, html_message)
         
-    add_log_entry(f"Admin '{current_user['email']}' sent an announcement with subject: {subject}", current_user['email'])
+    add_log_entry(current_user['email'], "Announcement Sent", {
+        "subject": subject,
+        "message": message_template,
+        "recipients": recipient_names
+    })
     return jsonify({"message": "Announcement sent to all residents."})
 
 @app.route('/api/set-current-turn/<resident_id>', methods=['POST'])
@@ -458,7 +554,7 @@ def set_current_turn(current_user, resident_id):
     try:
         new_index = next(i for i, flat in enumerate(flats) if flat.get("id") == resident_id)
         redis.set('current_turn_index', new_index)
-        add_log_entry(f"Admin '{current_user['email']}' set current turn to {flats[new_index]['name']}.", current_user['email'])
+        add_log_entry(current_user['email'], "Duty Turn Set", {"new_person": flats[new_index]['name']})
         return jsonify({"message": f"Current turn set to {flats[new_index]['name']}."})
     except StopIteration:
         return jsonify({"error": "Resident not found"}), 404
@@ -477,7 +573,7 @@ def skip_turn(current_user):
     new_index = (current_index + 1) % len(flats)
     redis.set('current_turn_index', new_index)
     
-    add_log_entry(f"Admin '{current_user['email']}' skipped {skipped_person_name}'s turn.", current_user['email'])
+    add_log_entry(current_user['email'], "Duty Turn Skipped", {"skipped_person": skipped_person_name})
     return jsonify({"message": "Turn skipped successfully."})
 
 @app.route('/api/toggle-pause', methods=['POST'])
@@ -488,7 +584,7 @@ def toggle_pause(current_user):
     new_status = not is_paused
     redis.set('reminders_paused', json.dumps(new_status))
     status_text = "paused" if new_status else "resumed"
-    add_log_entry(f"Admin '{current_user['email']}' {status_text} reminders.", current_user['email'])
+    add_log_entry(current_user['email'], "Reminders Toggled", {"status": status_text})
     return jsonify({"message": f"Reminders are now {status_text}.", "reminders_paused": new_status})
 
 # This is a one-time setup route, you might want to protect or remove it in production.
@@ -505,3 +601,5 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+    
