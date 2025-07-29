@@ -78,18 +78,13 @@ def login():
 
 # --- HELPER FUNCTIONS ---
 
-def add_log_entry(user, action, details):
-    """Adds a structured log entry to the database."""
+def add_log_entry(user_email, action_description):
+    """Adds a log entry as a formatted string to the database."""
     logs_json = redis.get('logs')
     logs = json.loads(logs_json) if logs_json else []
     
-    new_entry = {
-        "id": str(uuid.uuid4()),
-        "timestamp": datetime.utcnow().isoformat(),
-        "user": user,
-        "action": action,
-        "details": details
-    }
+    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    new_entry = f"[{timestamp}] ({user_email}) {action_description}"
     
     logs.insert(0, new_entry)
     if len(logs) > 100:  # Keep the last 100 log entries
@@ -266,10 +261,7 @@ def report_issue():
     if owner_whatsapp: send_whatsapp_message(owner_whatsapp, notification_message)
     if owner_email: send_email_message(owner_email, "New Maintenance Issue Reported", notification_message)
     
-    add_log_entry("Public", "Issue Reported", {
-        "reported_by": new_issue['reported_by'],
-        "description": new_issue['description']
-    })
+    add_log_entry("Public", f"Issue Reported by {new_issue['reported_by']}: {new_issue['description'][:50]}...")
     return jsonify({"message": "Issue reported successfully."}), 201
 
 # --- PROTECTED ROUTES ---
@@ -300,7 +292,7 @@ def get_dashboard_info(current_user):
         }
         return jsonify(dashboard_data)
     except Exception as e:
-        add_log_entry(current_user['email'], "Error", {"message": f"Error fetching dashboard: {str(e)}"})
+        add_log_entry(current_user['email'], f"Error fetching dashboard: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # RESIDENTS
@@ -327,7 +319,7 @@ def handle_residents(current_user):
             }
             flats.append(new_resident)
             redis.set('flats', json.dumps(flats))
-            add_log_entry(current_user['email'], "Resident Added", {"name": new_resident['name']})
+            add_log_entry(current_user['email'], f"Resident Added: {new_resident['name']}")
             return jsonify(new_resident), 201
         return add(current_user)
 
@@ -353,19 +345,16 @@ def handle_specific_resident(current_user, resident_id):
                 break
         if not resident_found: return jsonify({"error": "Resident not found"}), 404
         redis.set('flats', json.dumps(flats))
-        add_log_entry(current_user['email'], "Resident Updated", {"name": updated_name})
+        add_log_entry(current_user['email'], f"Resident Updated: {updated_name}")
         return jsonify({"message": "Resident updated successfully"})
 
     if request.method == 'DELETE':
-        if current_user['id'] == admin_id:
-            return jsonify({'message': 'Cannot delete yourself'}), 403
-            
         original_len = len(flats)
         resident_name = next((flat['name'] for flat in flats if flat.get("id") == resident_id), "Unknown")
         flats = [flat for flat in flats if flat.get("id") != resident_id]
         if len(flats) == original_len: return jsonify({"error": "Resident not found"}), 404
         redis.set('flats', json.dumps(flats))
-        add_log_entry(current_user['email'], "Resident Deleted", {"name": resident_name})
+        add_log_entry(current_user['email'], f"Resident Deleted: {resident_name}")
         return jsonify({"message": "Resident deleted successfully"})
 
 # ISSUES
@@ -399,7 +388,7 @@ def update_issue(current_user, issue_id):
         return jsonify({"error": "Issue not found"}), 404
         
     redis.set('issues', json.dumps(issues))
-    add_log_entry(current_user['email'], "Issue Status Updated", {"issue_id": issue_id, "new_status": new_status})
+    add_log_entry(current_user['email'], f"Issue status for {issue_id} updated to '{new_status}'")
     return jsonify({"message": "Issue status updated successfully"})
 
 # LOGS
@@ -438,7 +427,7 @@ def handle_admins(current_user):
         }
         admins.append(new_admin)
         redis.set('admins', json.dumps(admins))
-        add_log_entry(current_user['email'], "Admin Created", {"email": new_admin['email'], "role": new_admin['role']})
+        add_log_entry(current_user['email'], f"Admin Created: {new_admin['email']} with role {new_admin['role']}")
         
         safe_new_admin = {k: v for k, v in new_admin.items() if k != 'password_hash'}
         return jsonify(safe_new_admin), 201
@@ -465,7 +454,7 @@ def handle_specific_admin(current_user, admin_id):
                 break
         if not admin_found: return jsonify({"error": "Admin not found"}), 404
         redis.set('admins', json.dumps(admins))
-        add_log_entry(current_user['email'], "Admin Updated", {"email": updated_email})
+        add_log_entry(current_user['email'], f"Admin Updated: {updated_email}")
         return jsonify({"message": "Admin updated successfully"})
 
     if request.method == 'DELETE':
@@ -477,7 +466,7 @@ def handle_specific_admin(current_user, admin_id):
         admins = [admin for admin in admins if admin.get("id") != admin_id]
         if len(admins) == original_len: return jsonify({"error": "Admin not found"}), 404
         redis.set('admins', json.dumps(admins))
-        add_log_entry(current_user['email'], "Admin Deleted", {"email": admin_email})
+        add_log_entry(current_user['email'], f"Admin Deleted: {admin_email}")
         return jsonify({"message": "Admin deleted successfully"})
 
 # SETTINGS
@@ -493,7 +482,7 @@ def handle_settings(current_user):
     if request.method == 'PUT':
         new_settings = request.get_json()
         redis.set('settings', json.dumps(new_settings))
-        add_log_entry(current_user['email'], "Settings Updated", {"settings": list(new_settings.keys())})
+        add_log_entry(current_user['email'], f"Settings Updated: {', '.join(new_settings.keys())}")
         return jsonify(new_settings)
 
 # CORE ACTIONS
@@ -528,7 +517,7 @@ def trigger_reminder(current_user):
     if contact_info.get('email'): send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
     
     redis.set('last_reminder_date', date.today().isoformat())
-    add_log_entry(current_user['email'], "Reminder Sent", {"recipient": person_on_duty['name']})
+    add_log_entry(current_user['email'], f"Reminder Sent to {person_on_duty['name']}")
     return jsonify({"message": f"Reminder sent to {person_on_duty['name']}."})
 
 @app.route('/api/announcements', methods=['POST'])
@@ -558,11 +547,7 @@ def send_announcement(current_user):
         if contact_info.get('sms'): send_sms_message(contact_info['sms'], text_message)
         if contact_info.get('email'): send_email_message(contact_info['email'], subject, html_message)
         
-    add_log_entry(current_user['email'], "Announcement Sent", {
-        "subject": subject,
-        "message": message_template,
-        "recipients": recipient_names
-    })
+    add_log_entry(current_user['email'], f"Announcement Sent: '{subject}' to {len(recipient_names)} residents")
     return jsonify({"message": "Announcement sent to all residents."})
 
 @app.route('/api/set-current-turn/<resident_id>', methods=['POST'])
@@ -575,7 +560,7 @@ def set_current_turn(current_user, resident_id):
     try:
         new_index = next(i for i, flat in enumerate(flats) if flat.get("id") == resident_id)
         redis.set('current_turn_index', new_index)
-        add_log_entry(current_user['email'], "Duty Turn Set", {"new_person": flats[new_index]['name']})
+        add_log_entry(current_user['email'], f"Duty Turn Set to {flats[new_index]['name']}")
         return jsonify({"message": f"Current turn set to {flats[new_index]['name']}."})
     except StopIteration:
         return jsonify({"error": "Resident not found"}), 404
@@ -594,7 +579,7 @@ def skip_turn(current_user):
     new_index = (current_index + 1) % len(flats)
     redis.set('current_turn_index', new_index)
     
-    add_log_entry(current_user['email'], "Duty Turn Skipped", {"skipped_person": skipped_person_name})
+    add_log_entry(current_user['email'], f"Duty Turn Skipped for {skipped_person_name}")
     return jsonify({"message": "Turn skipped successfully."})
 
 @app.route('/api/toggle-pause', methods=['POST'])
@@ -605,7 +590,7 @@ def toggle_pause(current_user):
     new_status = not is_paused
     redis.set('reminders_paused', json.dumps(new_status))
     status_text = "paused" if new_status else "resumed"
-    add_log_entry(current_user['email'], "Reminders Toggled", {"status": status_text})
+    add_log_entry(current_user['email'], f"Reminders Toggled: {status_text}")
     return jsonify({"message": f"Reminders are now {status_text}.", "reminders_paused": new_status})
 
 # This is a one-time setup route, you might want to protect or remove it in production.
@@ -622,3 +607,7 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+    
+
+    
