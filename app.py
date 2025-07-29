@@ -719,16 +719,24 @@ def send_announcement(current_user):
     data = request.get_json()
     subject = data.get('subject')
     message_template = data.get('message')
-    if not subject or not message_template:
-        return jsonify({"message": "Subject and message are required."}), 400
+    resident_ids = data.get('resident_ids')
+
+    if not all([subject, message_template, resident_ids]):
+        return jsonify({"message": "Subject, message, and resident_ids are required."}), 400
 
     flats_json = redis.get('flats')
-    flats = json.loads(flats_json) if flats_json else []
+    all_flats = json.loads(flats_json) if flats_json else []
     settings_json = redis.get('settings')
     settings = json.loads(settings_json) if settings_json else {}
     
+    # Filter residents based on the provided IDs
+    recipients = [flat for flat in all_flats if flat.get('id') in resident_ids]
+    
+    if not recipients:
+        return jsonify({"message": "No valid recipients found for the provided IDs."}), 400
+
     recipient_names = []
-    for resident in flats:
+    for resident in recipients:
         recipient_names.append(resident['name'])
         # Generate formatted messages for each resident
         text_message = generate_text_message(message_template, resident, settings, subject)
@@ -739,8 +747,8 @@ def send_announcement(current_user):
         if contact_info.get('sms'): send_sms_message(contact_info['sms'], text_message)
         if contact_info.get('email'): send_email_message(contact_info['email'], subject, html_message)
         
-    add_log_entry(current_user['email'], f"Announcement Sent: '{subject}' to {len(recipient_names)} residents")
-    return jsonify({"message": "Announcement sent to all residents."})
+    add_log_entry(current_user['email'], f"Announcement Sent: '{subject}' to {len(recipient_names)} resident(s)")
+    return jsonify({"message": f"Announcement sent to {len(recipient_names)} resident(s)."})
 
 @app.route('/api/set-current-turn/<resident_id>', methods=['POST'])
 @token_required
