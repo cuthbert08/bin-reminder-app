@@ -97,13 +97,12 @@ def generate_text_message(template, resident, settings, subject=None):
     flat_number = resident.get("flat_number", "")
     owner_name = settings.get('owner_name', 'Admin')
     owner_number = settings.get('owner_contact_number', '')
-    report_link = settings.get('report_issue_link', '#')
 
     # Personalize the main message
     personalized_body = template.replace("{first_name}", first_name).replace("{flat_number}", flat_number)
     
-    # Add footer
-    footer = f"\n\nIf you have any issues, contact {owner_name} at {owner_number}.\nReport an issue: {report_link}"
+    # Add a more SMS-friendly footer
+    footer = f"\n\nContact {owner_name} at {owner_number} for issues."
     
     # Prepend subject for announcements
     if subject:
@@ -210,6 +209,128 @@ def generate_html_message(template, resident, settings, subject="Bin Duty Remind
     """
     return html
 
+def generate_owner_issue_email(issue, settings):
+    """Generates a professional HTML email for the owner about a new issue."""
+    
+    # Safely get the frontend URL, defaulting to a placeholder if not set
+    base_url = settings.get('report_issue_link', 'http://localhost:9002').rsplit('/report', 1)[0]
+    issues_link = f"{base_url}/issues"
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>New Maintenance Issue Reported</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap');
+            body {{
+                font-family: 'Poppins', sans-serif;
+                background-color: #f9fafb;
+                color: #374151;
+                margin: 0;
+                padding: 20px;
+            }}
+            .container {{
+                max-width: 560px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                border-radius: 12px;
+                overflow: hidden;
+                box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05);
+                border: 1px solid #e5e7eb;
+            }}
+            .header {{
+                background-color: #FF5A5F;
+                color: #ffffff;
+                padding: 24px;
+                text-align: center;
+            }}
+            .header h1 {{
+                margin: 0;
+                font-size: 28px;
+                font-weight: 600;
+            }}
+            .content {{
+                padding: 32px;
+                color: #4b5563;
+            }}
+            .content h2 {{
+                font-size: 20px;
+                color: #111827;
+                margin-top: 0;
+                margin-bottom: 20px;
+            }}
+            .content p {{
+                margin: 0 0 10px;
+                line-height: 1.6;
+            }}
+            .details-box {{
+                background-color: #f3f4f6;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 20px;
+                margin-top: 20px;
+            }}
+            .details-box strong {{
+                color: #111827;
+            }}
+            .button-container {{
+                text-align: center;
+                margin-top: 30px;
+                margin-bottom: 10px;
+            }}
+            .button {{
+                display: inline-block;
+                padding: 14px 28px;
+                background-color: #3B82F6;
+                color: #ffffff;
+                text-decoration: none;
+                border-radius: 50px;
+                font-weight: 600;
+                font-size: 16px;
+                transition: background-color 0.3s;
+            }}
+            .button:hover {{
+                background-color: #2563EB;
+            }}
+            .footer {{
+                padding: 24px;
+                font-size: 13px;
+                color: #9ca3af;
+                text-align: center;
+                background-color: #f9fafb;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>New Issue Reported</h1>
+            </div>
+            <div class="content">
+                <h2>A new maintenance issue has been submitted.</h2>
+                <p>Here are the details:</p>
+                <div class="details-box">
+                    <p><strong>Reported By:</strong> {issue['reported_by']}</p>
+                    <p><strong>Flat Number:</strong> {issue['flat_number']}</p>
+                    <p><strong>Description:</strong></p>
+                    <p>{issue['description']}</p>
+                </div>
+                <div class="button-container">
+                    <a href="{issues_link}" class="button">View All Issues</a>
+                </div>
+            </div>
+            <div class="footer">
+                <p>This is an automated notification from your Bin Reminder App.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
 # --- PUBLIC ROUTES ---
 @app.route('/api/issues', methods=['POST'])
 def report_issue():
@@ -231,12 +352,23 @@ def report_issue():
     settings_json = redis.get('settings')
     settings = json.loads(settings_json) if settings_json else {}
     owner_whatsapp = settings.get('owner_contact_whatsapp')
+    owner_sms = settings.get('owner_contact_number')
     owner_email = settings.get('owner_contact_email')
-    
-    notification_message = f"New Issue Reported by {new_issue['reported_by']} ({new_issue['flat_number']}):\n{new_issue['description']}"
 
-    if owner_whatsapp: send_whatsapp_message(owner_whatsapp, notification_message)
-    if owner_email: send_email_message(owner_email, "New Maintenance Issue Reported", notification_message)
+    # Construct the link to the issues page
+    base_url = settings.get('report_issue_link', 'http://localhost:9002').rsplit('/report', 1)[0]
+    issues_link = f"{base_url}/issues"
+    
+    # Prepare messages for different channels
+    text_notification = f"New Issue Reported by {new_issue['reported_by']}, Flat {new_issue['flat_number']}: {new_issue['description'][:80]}... See it here: {issues_link}"
+    html_notification = generate_owner_issue_email(new_issue, settings)
+
+    if owner_whatsapp: 
+        send_whatsapp_message(owner_whatsapp, text_notification)
+    if owner_sms:
+        send_sms_message(owner_sms, text_notification)
+    if owner_email: 
+        send_email_message(owner_email, "New Maintenance Issue Reported", html_notification)
     
     add_log_entry("Public", f"Issue Reported by {new_issue['reported_by']}: {new_issue['description'][:50]}...")
     return jsonify({"message": "Issue reported successfully."}), 201
@@ -449,18 +581,25 @@ def handle_specific_admin(current_user, admin_id):
 # SETTINGS
 @app.route('/api/settings', methods=['GET', 'PUT'])
 @token_required
-@role_required(['superuser'])
 def handle_settings(current_user):
-    if request.method == 'GET':
+    @role_required(['superuser'])
+    def get(current_user):
         settings_json = redis.get('settings')
         settings = json.loads(settings_json) if settings_json else {}
         return jsonify(settings)
-    
-    if request.method == 'PUT':
+
+    @role_required(['superuser'])
+    def put(current_user):
         new_settings = request.get_json()
         redis.set('settings', json.dumps(new_settings))
         add_log_entry(current_user['email'], f"Settings Updated: {', '.join(new_settings.keys())}")
         return jsonify(new_settings)
+
+    if request.method == 'GET':
+        return get(current_user)
+    if request.method == 'PUT':
+        return put(current_user)
+
 
 # CORE ACTIONS
 @app.route('/api/trigger-reminder', methods=['POST'])
@@ -574,13 +713,47 @@ def toggle_pause(current_user):
 @app.route('/api/initialize-data')
 def initialize_data():
     try:
-        superuser_password_hash = generate_password_hash("your-secure-password", method='pbkdf2:sha256')
-        admins = [{"id": str(uuid.uuid4()), "email": "admin@example.com", "password_hash": superuser_password_hash, "role": "superuser"}]
-        redis.set('admins', json.dumps(admins))
-        # ... Initialize other data ...
-        return "Database initialized."
+        # Check if settings already exist
+        if redis.exists('settings'):
+            return "Database already initialized."
+
+        # Initialize default settings
+        default_settings = {
+            "owner_name": "Admin",
+            "owner_contact_number": "",
+            "owner_contact_email": "admin@example.com",
+            "owner_contact_whatsapp": "",
+            "report_issue_link": "http://localhost:9002/report",
+            "reminder_template": "Hi {first_name}, this is a reminder that it's your turn for bin duty for flat {flat_number} this week."
+        }
+        redis.set('settings', json.dumps(default_settings))
+
+        # Initialize default admin user if none exist
+        if not redis.exists('admins'):
+            superuser_password_hash = generate_password_hash("your-secure-password", method='pbkdf2:sha256')
+            admin_id = str(uuid.uuid4())
+            admins = [{"id": admin_id, "email": "admin@example.com", "password_hash": superuser_password_hash, "role": "superuser"}]
+            redis.set('admins', json.dumps(admins))
+            add_log_entry("System", f"Default admin user created: admin@example.com")
+
+        # Initialize other data structures as empty lists
+        if not redis.exists('flats'):
+            redis.set('flats', json.dumps([]))
+        if not redis.exists('issues'):
+            redis.set('issues', json.dumps([]))
+        if not redis.exists('logs'):
+            redis.set('logs', json.dumps([]))
+        if not redis.exists('current_turn_index'):
+            redis.set('current_turn_index', 0)
+        if not redis.exists('reminders_paused'):
+            redis.set('reminders_paused', json.dumps(False))
+
+        add_log_entry("System", "Database initialized with default values.")
+        return "Database initialized successfully."
     except Exception as e:
         return f"Error: {e}", 500
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+    
