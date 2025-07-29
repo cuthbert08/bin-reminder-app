@@ -240,3 +240,19 @@ def create_html_email_body(first_name, flat_number, settings):
     """
     return html
 
+@app.route('/api/debug-admins')
+def debug_admins():
+    """A temporary endpoint to view admin data for debugging."""
+    try:
+        admins_json = redis.get('admins')
+        if not admins_json:
+            return "No admin data found in the database."
+            
+        admins = json.loads(admins_json)
+        # We will remove the password hash for security before displaying
+        for admin in admins:
+            admin.pop('password_hash', None)
+            
+        return jsonify(admins)
+    except Exception as e:
+        return f"An error occurred: {e}"
