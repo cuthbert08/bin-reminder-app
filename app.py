@@ -477,6 +477,15 @@ def handle_settings(current_user):
     if request.method == 'GET':
         settings_json = redis.get('settings')
         settings = json.loads(settings_json) if settings_json else {}
+        # Auto-generate report issue link if it doesn't exist
+        if 'report_issue_link' not in settings or not settings['report_issue_link']:
+            # Vercel provides VERCEL_URL, use it for production
+            if 'VERCEL_URL' in os.environ:
+                base_url = f"https://{os.environ['VERCEL_URL']}"
+            else:
+                # Fallback for local development
+                base_url = "http://localhost:9002"
+            settings['report_issue_link'] = f"{base_url}/report"
         return jsonify(settings)
     
     if request.method == 'PUT':
@@ -607,7 +616,5 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-    
 
     
