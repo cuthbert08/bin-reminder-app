@@ -26,17 +26,10 @@ redis = Redis(
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-testing')
 
 # --- IMPORT SENDING FUNCTIONS ---
-# These files would need to be in the same directory.
-# from send_whatsapp import send_whatsapp_message
-# from send_sms import send_sms_message
-# from send_email import send_email_message
-# Mock functions if the files don't exist:
-def send_whatsapp_message(to, body):
-    print(f"WHATSAPP to {to}: {body}")
-def send_sms_message(to, body):
-    print(f"SMS to {to}: {body}")
-def send_email_message(to, subject, body):
-    print(f"EMAIL to {to}: Subject: {subject}\nBody: {body}")
+# These will be the real functions from your other files.
+from send_whatsapp import send_whatsapp_message
+from send_sms import send_sms_message
+from send_email import send_email_message
 
 
 # --- SECURITY & AUTHENTICATION ---
