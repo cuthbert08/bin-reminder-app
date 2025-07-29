@@ -232,6 +232,7 @@ def upload_document():
         blob = vercel_put(filename, file_body, {"access": "public"})
         return jsonify(blob), 200
     except Exception as e:
+        print(f"Error uploading file: {e}") # Added print statement
         return jsonify({"error": f"Could not upload file: {str(e)}"}), 500
 
 
@@ -356,6 +357,9 @@ def handle_specific_resident(current_user, resident_id):
         return jsonify({"message": "Resident updated successfully"})
 
     if request.method == 'DELETE':
+        if current_user['id'] == admin_id:
+            return jsonify({'message': 'Cannot delete yourself'}), 403
+            
         original_len = len(flats)
         resident_name = next((flat['name'] for flat in flats if flat.get("id") == resident_id), "Unknown")
         flats = [flat for flat in flats if flat.get("id") != resident_id]
@@ -618,5 +622,3 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-    
