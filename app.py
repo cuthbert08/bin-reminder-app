@@ -10,7 +10,6 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import jwt
 from functools import wraps
-from vercel_blob import put as vercel_put # For file uploads
 
 # --- INITIALIZATION ---
 
@@ -212,25 +211,6 @@ def generate_html_message(template, resident, settings, subject="Bin Duty Remind
     return html
 
 # --- PUBLIC ROUTES ---
-@app.route('/api/documents/upload', methods=['POST'])
-def upload_document():
-    filename = request.headers.get('X-File-Name')
-    if not filename:
-        return jsonify({"error": "X-File-Name header is required"}), 400
-    
-    file_body = request.data
-    if not file_body:
-        return jsonify({"error": "No file data in request body"}), 400
-
-    try:
-        # Upload to Vercel Blob
-        blob = vercel_put(filename, file_body, {"access": "public"})
-        return jsonify(blob), 200
-    except Exception as e:
-        print(f"Error uploading file: {e}") # Added print statement
-        return jsonify({"error": f"Could not upload file: {str(e)}"}), 500
-
-
 @app.route('/api/issues', methods=['POST'])
 def report_issue():
     data = request.get_json()
@@ -242,7 +222,6 @@ def report_issue():
         "reported_by": data.get("name"),
         "flat_number": data.get("flat_number"),
         "description": data.get("description"),
-        "image_url": data.get("image_url"),
         "status": "Reported",
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -255,9 +234,7 @@ def report_issue():
     owner_email = settings.get('owner_contact_email')
     
     notification_message = f"New Issue Reported by {new_issue['reported_by']} ({new_issue['flat_number']}):\n{new_issue['description']}"
-    if new_issue['image_url']:
-        notification_message += f"\nImage: {new_issue['image_url']}"
-        
+
     if owner_whatsapp: send_whatsapp_message(owner_whatsapp, notification_message)
     if owner_email: send_email_message(owner_email, "New Maintenance Issue Reported", notification_message)
     
@@ -607,6 +584,3 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-    
-
