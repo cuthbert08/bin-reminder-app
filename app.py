@@ -26,7 +26,7 @@ redis = Redis(
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-testing')
 
 # --- IMPORT SENDING FUNCTIONS ---
-# These will be the real functions from your other files.
+# These should be your actual implementations that use services like Twilio/SendGrid
 from send_whatsapp import send_whatsapp_message
 from send_sms import send_sms_message
 from send_email import send_email_message
@@ -87,27 +87,47 @@ def add_log_entry(message, user_email="System"):
     if len(logs) > 100: logs = logs[:100]
     redis.set('logs', json.dumps(logs))
 
-# --- HTML EMAIL ---
-def create_html_email_body(first_name, flat_number, settings):
-    template = settings.get('reminder_template', '')
-    report_link = settings.get('report_issue_link', '#')
+def generate_text_message(template, resident, settings, subject=None):
+    """Personalizes a text message and adds the standard footer."""
+    first_name = resident.get("name", "").split(" ")[0]
+    flat_number = resident.get("flat_number", "")
     owner_name = settings.get('owner_name', 'Admin')
     owner_number = settings.get('owner_contact_number', '')
-    message_body = template.replace("{first_name}", first_name).replace("{flat_number}", flat_number)
-    message_body = message_body.replace("{admin_name}", owner_name).replace("{admin_number}", owner_number).replace("{link_to_issue_page}", report_link)
+    report_link = settings.get('report_issue_link', '#')
 
+    # Personalize the main message
+    personalized_body = template.replace("{first_name}", first_name).replace("{flat_number}", flat_number)
+    
+    # Add footer
+    footer = f"\n\nIf you have any issues, contact {owner_name} at {owner_number}.\nReport an issue: {report_link}"
+    
+    # Prepend subject for announcements
+    if subject:
+        return f"Announcement: {subject}\n{personalized_body}{footer}"
+    else:
+        return f"{personalized_body}{footer}"
+
+def generate_html_message(template, resident, settings, subject="Bin Duty Reminder"):
+    """Generates a professional HTML email with personalization and a standard structure."""
+    first_name = resident.get("name", "").split(" ")[0]
+    flat_number = resident.get("flat_number", "")
+    owner_name = settings.get('owner_name', 'Admin')
+    owner_number = settings.get('owner_contact_number', '')
+    report_link = settings.get('report_issue_link', '#')
+
+    # Personalize the main message
+    personalized_body = template.replace("{first_name}", first_name).replace("{flat_number}", flat_number)
+    
     html = f"""
-    <html>
-        <body style="font-family: sans-serif; margin: 20px; color: #333;">
-            <h2>Bin Duty Reminder</h2>
-            <p>{message_body.replace(chr(10), "<br>")}</p>
-            <a href="{report_link}" style="display: inline-block; padding: 12px 18px; margin-top: 15px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                Report a Maintenance Issue
-            </a>
-            <hr style="margin-top: 25px; border: none; border-top: 1px solid #eee;">
-            <p style="font-size: 12px; color: #888;">This is an automated message. Contact {owner_name} at {owner_number} for enquiries.</p>
-        </body>
-    </html>
+    <div style="border: 1px solid #ddd; padding: 20px; font-family: sans-serif; max-width: 600px;">
+        <h2 style="color: #333;">{subject}</h2>
+        <p style="color: #555; line-height: 1.6;">{personalized_body.replace(chr(10), "<br>")}</p>
+        <a href="{report_link}" style="display: inline-block; padding: 12px 18px; margin-top: 15px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
+            Report an Issue
+        </a>
+        <hr style="margin-top: 25px; border: none; border-top: 1px solid #eee;">
+        <p style="font-size: 12px; color: #888;">This is an automated message. Contact {owner_name} at {owner_number} for enquiries.</p>
+    </div>
     """
     return html
 
@@ -371,7 +391,7 @@ def handle_settings(current_user):
 @role_required(['superuser', 'editor'])
 def trigger_reminder(current_user):
     data = request.get_json()
-    custom_message = data.get('message') if data else None
+    custom_template = data.get('message') if data else None
 
     flats_json = redis.get('flats')
     flats = json.loads(flats_json) if flats_json else []
@@ -383,20 +403,18 @@ def trigger_reminder(current_user):
     settings_json = redis.get('settings')
     settings = json.loads(settings_json) if settings_json else {}
 
-    contact_info = person_on_duty.get('contact', {})
-    if custom_message:
-        message_to_send = custom_message
-        html_body = message_to_send
-    else:
-        message_to_send = settings.get("reminder_template", "Reminder: It's your turn for bin duty.").format(
-            first_name=person_on_duty.get("name", "").split(" ")[0],
-            flat_number=person_on_duty.get("flat_number", "")
-        )
-        html_body = create_html_email_body(person_on_duty.get("name", ""), person_on_duty.get("flat_number", ""), settings)
+    # Use custom message if provided, otherwise use the saved template
+    template_to_use = custom_template or settings.get("reminder_template", "Reminder: It's your turn for bin duty.")
+    
+    # Generate formatted messages
+    text_message = generate_text_message(template_to_use, person_on_duty, settings)
+    html_message = generate_html_message(template_to_use, person_on_duty, settings, "Bin Duty Reminder")
 
-    if contact_info.get('whatsapp'): send_whatsapp_message(contact_info['whatsapp'], message_to_send)
-    if contact_info.get('sms'): send_sms_message(contact_info['sms'], message_to_send)
-    if contact_info.get('email'): send_email_message(contact_info['email'], "Bin Duty Reminder", html_body)
+    # Send messages
+    contact_info = person_on_duty.get('contact', {})
+    if contact_info.get('whatsapp'): send_whatsapp_message(contact_info['whatsapp'], text_message)
+    if contact_info.get('sms'): send_sms_message(contact_info['sms'], text_message)
+    if contact_info.get('email'): send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
     
     redis.set('last_reminder_date', date.today().isoformat())
     add_log_entry(f"Admin '{current_user['email']}' manually triggered reminder for {person_on_duty['name']}.", current_user['email'])
@@ -408,17 +426,24 @@ def trigger_reminder(current_user):
 def send_announcement(current_user):
     data = request.get_json()
     subject = data.get('subject')
-    message = data.get('message')
-    if not subject or not message:
+    message_template = data.get('message')
+    if not subject or not message_template:
         return jsonify({"message": "Subject and message are required."}), 400
 
     flats_json = redis.get('flats')
     flats = json.loads(flats_json) if flats_json else []
+    settings_json = redis.get('settings')
+    settings = json.loads(settings_json) if settings_json else {}
+    
     for resident in flats:
+        # Generate formatted messages for each resident
+        text_message = generate_text_message(message_template, resident, settings, subject)
+        html_message = generate_html_message(message_template, resident, settings, subject)
+        
         contact_info = resident.get('contact', {})
-        if contact_info.get('whatsapp'): send_whatsapp_message(contact_info['whatsapp'], f"*{subject}*\n{message}")
-        if contact_info.get('sms'): send_sms_message(contact_info['sms'], f"Announcement: {subject}\n{message}")
-        if contact_info.get('email'): send_email_message(contact_info['email'], subject, message)
+        if contact_info.get('whatsapp'): send_whatsapp_message(contact_info['whatsapp'], text_message)
+        if contact_info.get('sms'): send_sms_message(contact_info['sms'], text_message)
+        if contact_info.get('email'): send_email_message(contact_info['email'], subject, html_message)
         
     add_log_entry(f"Admin '{current_user['email']}' sent an announcement with subject: {subject}", current_user['email'])
     return jsonify({"message": "Announcement sent to all residents."})
@@ -466,9 +491,17 @@ def toggle_pause(current_user):
     add_log_entry(f"Admin '{current_user['email']}' {status_text} reminders.", current_user['email'])
     return jsonify({"message": f"Reminders are now {status_text}.", "reminders_paused": new_status})
 
-if __name__ == '__main__':
-    # You might want to remove the initialization routes or protect them
-    # before deploying to a production environment.
-    app.run(debug=True)
+# This is a one-time setup route, you might want to protect or remove it in production.
+@app.route('/api/initialize-data')
+def initialize_data():
+    try:
+        superuser_password_hash = generate_password_hash("your-secure-password", method='pbkdf2:sha256')
+        admins = [{"id": str(uuid.uuid4()), "email": "admin@example.com", "password_hash": superuser_password_hash, "role": "superuser"}]
+        redis.set('admins', json.dumps(admins))
+        # ... Initialize other data ...
+        return "Database initialized."
+    except Exception as e:
+        return f"Error: {e}", 500
 
-    
+if __name__ == '__main__':
+    app.run(debug=True)
