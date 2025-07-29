@@ -219,19 +219,20 @@ def generate_html_message(template, resident, settings, subject="Bin Duty Remind
 # --- PUBLIC ROUTES ---
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_document():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-    if file:
-        try:
-            # Upload to Vercel Blob
-            blob = vercel_put(file.filename, file, {"access": "public"})
-            return jsonify(blob), 200
-        except Exception as e:
-            return jsonify({"error": f"Could not upload file: {str(e)}"}), 500
-    return jsonify({"error": "An unknown error occurred"}), 500
+    filename = request.headers.get('X-File-Name')
+    if not filename:
+        return jsonify({"error": "X-File-Name header is required"}), 400
+    
+    file_body = request.data
+    if not file_body:
+        return jsonify({"error": "No file data in request body"}), 400
+
+    try:
+        # Upload to Vercel Blob
+        blob = vercel_put(filename, file_body, {"access": "public"})
+        return jsonify(blob), 200
+    except Exception as e:
+        return jsonify({"error": f"Could not upload file: {str(e)}"}), 500
 
 
 @app.route('/api/issues', methods=['POST'])
