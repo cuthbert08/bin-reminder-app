@@ -332,6 +332,12 @@ def generate_owner_issue_email(issue, settings):
     return html
 
 # --- PUBLIC ROUTES ---
+@app.route('/api/issues/public', methods=['GET'])
+def get_public_issues():
+    issues_json = redis.get('issues')
+    issues = json.loads(issues_json) if issues_json else []
+    return jsonify(issues)
+
 @app.route('/api/issues', methods=['POST'])
 def report_issue():
     data = request.get_json()
@@ -433,6 +439,30 @@ def handle_residents(current_user):
             return jsonify(new_resident), 201
         return add(current_user)
 
+@app.route('/api/residents/order', methods=['PUT'])
+@token_required
+@role_required(['superuser', 'editor'])
+def update_residents_order(current_user):
+    data = request.get_json()
+    new_order = data.get('residents')
+    if new_order is None:
+        return jsonify({'error': 'No residents data provided'}), 400
+
+    # Basic validation to ensure all residents are still present
+    flats_json = redis.get('flats')
+    current_flats = json.loads(flats_json) if flats_json else []
+    current_ids = {f['id'] for f in current_flats}
+    new_ids = {f['id'] for f in new_order}
+
+    if current_ids != new_ids:
+        return jsonify({'error': 'Mismatch in resident list'}), 400
+
+    redis.set('flats', json.dumps(new_order))
+    redis.set('current_turn_index', 0) # Reset index on reorder
+    add_log_entry(current_user['email'], 'Resident duty order updated')
+    return jsonify({'message': 'Resident order updated successfully'})
+
+
 @app.route('/api/residents/<resident_id>', methods=['PUT', 'DELETE'])
 @token_required
 @role_required(['superuser', 'editor'])
@@ -468,12 +498,35 @@ def handle_specific_resident(current_user, resident_id):
         return jsonify({"message": "Resident deleted successfully"})
 
 # ISSUES
-@app.route('/api/issues', methods=['GET'])
+@app.route('/api/issues', methods=['GET', 'DELETE'])
 @token_required
-def get_issues(current_user):
-    issues_json = redis.get('issues')
-    issues = json.loads(issues_json) if issues_json else []
-    return jsonify(issues)
+def handle_issues(current_user):
+    if request.method == 'GET':
+        issues_json = redis.get('issues')
+        issues = json.loads(issues_json) if issues_json else []
+        return jsonify(issues)
+    
+    if request.method == 'DELETE':
+        @role_required(['superuser', 'editor'])
+        def delete(current_user):
+            data = request.get_json()
+            ids_to_delete = data.get('ids', [])
+            if not ids_to_delete:
+                return jsonify({'message': 'No issue IDs provided'}), 400
+            
+            issues_json = redis.get('issues')
+            issues = json.loads(issues_json) if issues_json else []
+            
+            original_len = len(issues)
+            issues = [issue for issue in issues if issue.get('id') not in ids_to_delete]
+            
+            if len(issues) == original_len:
+                return jsonify({'message': 'No matching issues found to delete'}), 404
+            
+            redis.set('issues', json.dumps(issues))
+            add_log_entry(current_user['email'], f"Deleted {original_len - len(issues)} issue(s)")
+            return jsonify({'message': 'Issues deleted successfully'})
+        return delete(current_user)
 
 @app.route('/api/issues/<issue_id>', methods=['PUT'])
 @token_required
@@ -502,12 +555,34 @@ def update_issue(current_user, issue_id):
     return jsonify({"message": "Issue status updated successfully"})
 
 # LOGS
-@app.route('/api/logs', methods=['GET'])
+@app.route('/api/logs', methods=['GET', 'DELETE'])
 @token_required
-def get_logs(current_user):
-    logs_json = redis.get('logs')
-    logs = json.loads(logs_json) if logs_json else []
-    return jsonify(logs)
+def handle_logs(current_user):
+    if request.method == 'GET':
+        logs_json = redis.get('logs')
+        logs = json.loads(logs_json) if logs_json else []
+        return jsonify(logs)
+    
+    if request.method == 'DELETE':
+        @role_required(['superuser', 'editor'])
+        def delete(current_user):
+            data = request.get_json()
+            logs_to_delete = data.get('logs', [])
+            if not logs_to_delete:
+                return jsonify({'message': 'No logs provided to delete'}), 400
+            
+            logs_json = redis.get('logs')
+            current_logs = json.loads(logs_json) if logs_json else []
+            
+            original_len = len(current_logs)
+            logs_to_delete_set = set(logs_to_delete)
+            current_logs = [log for log in current_logs if log not in logs_to_delete_set]
+            
+            redis.set('logs', json.dumps(current_logs))
+            add_log_entry(current_user['email'], f"Deleted {original_len - len(current_logs)} log entries")
+            return jsonify({'message': 'Logs deleted successfully'})
+        return delete(current_user)
+
 
 # ADMINS
 @app.route('/api/admins', methods=['GET', 'POST'])
