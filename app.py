@@ -106,6 +106,22 @@ def add_log_entry(user_email, action_description):
         
     redis.set('logs', json.dumps(logs))
 
+def _advance_turn_in_db():
+    """
+    Advances the duty turn by moving the current person to the end of the list.
+    This function directly modifies the 'flats' list in Redis.
+    """
+    flats_json = redis.get('flats')
+    flats = json.loads(flats_json) if flats_json else []
+    if len(flats) > 1:
+        # Move the person at the top (index 0) to the end of the list
+        person_on_duty = flats.pop(0)
+        flats.append(person_on_duty)
+        redis.set('flats', json.dumps(flats))
+        return True, f"Advanced turn. {person_on_duty.get('name')} moved to the end."
+    return False, "Not enough residents to rotate."
+
+
 def generate_text_message(template, resident, settings, subject=None):
     """Personalizes a text message and adds the standard footer."""
     first_name = resident.get("name", "").split(" ")[0]
@@ -408,22 +424,22 @@ def get_dashboard_info(current_user):
     try:
         flats_json = redis.get('flats')
         flats = json.loads(flats_json) if flats_json else []
-        current_index = int(redis.get('current_turn_index') or 0)
         last_run_date = redis.get('last_reminder_date') or "N/A"
         reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
 
         if not flats:
-            return jsonify({"current_duty": {"name": "N/A"}, "next_in_rotation": {"name": "N/A"}, "system_status": {"last_reminder_run": "N/A", "reminders_paused": reminders_paused}})
-        
-        if current_index >= len(flats):
-            current_index = 0
+            return jsonify({
+                "current_duty": {"name": "N/A"},
+                "next_in_rotation": {"name": "N/A"},
+                "system_status": {"last_reminder_run": last_run_date, "reminders_paused": reminders_paused}
+            })
 
-        current_person = flats[current_index]
-        next_person = flats[(current_index + 1) % len(flats)]
+        current_person = flats[0]
+        next_person = flats[1] if len(flats) > 1 else {"name": "N/A"}
 
         dashboard_data = {
-            "current_duty": {"name": current_person["name"]},
-            "next_in_rotation": {"name": next_person["name"]},
+            "current_duty": {"name": current_person.get("name")},
+            "next_in_rotation": {"name": next_person.get("name")},
             "system_status": {"last_reminder_run": last_run_date, "reminders_paused": reminders_paused}
         }
         return jsonify(dashboard_data)
@@ -468,7 +484,6 @@ def update_residents_order(current_user):
     if new_order is None:
         return jsonify({'error': 'No residents data provided'}), 400
 
-    # Basic validation to ensure all residents are still present
     flats_json = redis.get('flats')
     current_flats = json.loads(flats_json) if flats_json else []
     current_ids = {f['id'] for f in current_flats}
@@ -478,7 +493,6 @@ def update_residents_order(current_user):
         return jsonify({'error': 'Mismatch in resident list'}), 400
 
     redis.set('flats', json.dumps(new_order))
-    redis.set('current_turn_index', 0) # Reset index on reorder
     add_log_entry(current_user['email'], 'Resident duty order updated')
     return jsonify({'message': 'Resident order updated successfully'})
 
@@ -514,6 +528,8 @@ def handle_specific_resident(current_user, resident_id):
         flats = [flat for flat in flats if flat.get("id") != resident_id]
         if len(flats) == original_len: return jsonify({"error": "Resident not found"}), 404
         redis.set('flats', json.dumps(flats))
+        # After deleting a resident, we should reset the turn index to be safe
+        redis.set('current_turn_index', 0)
         add_log_entry(current_user['email'], f"Resident Deleted: {resident_name}")
         return jsonify({"message": "Resident deleted successfully"})
 
@@ -738,8 +754,7 @@ def trigger_reminder():
     if not flats:
         return jsonify({"message": "No residents to remind."}), 400
     
-    current_index = int(redis.get('current_turn_index') or 0)
-    person_on_duty = flats[current_index % len(flats)]
+    person_on_duty = flats[0]
     settings_json = redis.get('settings')
     settings = json.loads(settings_json) if settings_json else {}
 
@@ -762,13 +777,10 @@ def trigger_reminder():
     redis.set('last_reminder_date', date.today().isoformat())
     add_log_entry(user_email, f"Reminder Sent to {person_on_duty['name']}")
     
-    # If it's an automatic run, advance the turn
-    if user_email == "System (Cron)":
-        new_index = (current_index + 1) % len(flats)
-        redis.set('current_turn_index', new_index)
-        add_log_entry("System", "Duty turn automatically advanced.")
+    _advance_turn_in_db()
 
     return jsonify({"message": f"Reminder sent to {person_on_duty['name']}."})
+
 
 @app.route('/api/announcements', methods=['POST'])
 @token_required
@@ -820,10 +832,17 @@ def set_current_turn(current_user, resident_id):
     flats = json.loads(flats_json) if flats_json else []
     
     try:
-        new_index = next(i for i, flat in enumerate(flats) if flat.get("id") == resident_id)
-        redis.set('current_turn_index', new_index)
-        add_log_entry(current_user['email'], f"Duty Turn Set to {flats[new_index]['name']}")
-        return jsonify({"message": f"Current turn set to {flats[new_index]['name']}."})
+        # Find the resident and move them to the top of the list
+        resident_to_move = next((r for r in flats if r.get("id") == resident_id), None)
+        if not resident_to_move:
+            return jsonify({"error": "Resident not found"}), 404
+
+        # Re-create the list with the selected resident at the top
+        new_order = [resident_to_move] + [r for r in flats if r.get("id") != resident_id]
+        
+        redis.set('flats', json.dumps(new_order))
+        add_log_entry(current_user['email'], f"Duty Turn Set to {resident_to_move['name']}")
+        return jsonify({"message": f"Current turn set to {resident_to_move['name']}."})
     except StopIteration:
         return jsonify({"error": "Resident not found"}), 404
 
@@ -836,13 +855,25 @@ def skip_turn(current_user):
     if not flats:
         return jsonify({"message": "No residents in the list to skip."}), 400
         
-    current_index = int(redis.get('current_turn_index') or 0)
-    skipped_person_name = flats[current_index % len(flats)]['name']
-    new_index = (current_index + 1) % len(flats)
-    redis.set('current_turn_index', new_index)
+    skipped_person_name = flats[0]['name']
+    success, message = _advance_turn_in_db()
     
-    add_log_entry(current_user['email'], f"Duty Turn Skipped for {skipped_person_name}")
-    return jsonify({"message": "Turn skipped successfully."})
+    if success:
+        add_log_entry(current_user['email'], f"Duty Turn Skipped for {skipped_person_name}")
+        return jsonify({"message": "Turn skipped successfully."})
+    else:
+        return jsonify({"message": message}), 400
+
+@app.route('/api/advance-turn', methods=['POST'])
+@token_required
+@role_required(['superuser', 'editor'])
+def advance_turn(current_user):
+    success, message = _advance_turn_in_db()
+    if success:
+        add_log_entry(current_user['email'], "Duty turn manually advanced.")
+        return jsonify({"message": "Turn advanced successfully."})
+    else:
+        return jsonify({"message": message}), 400
 
 @app.route('/api/toggle-pause', methods=['POST'])
 @token_required
