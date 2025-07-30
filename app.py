@@ -16,17 +16,19 @@ from functools import wraps
 app = Flask(__name__)
 CORS(app)
 
-# Initialize Upstash Redis Client
-redis = Redis.from_url(os.environ.get("UPSTASH_REDIS_REST_URL"), os.environ.get("UPSTASH_REDIS_REST_TOKEN"))
-
+# Initialize Redis Client
+redis = Redis(
+    url=os.environ.get('KV_REST_API_URL'),
+    token=os.environ.get('KV_REST_API_TOKEN')
+)
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-testing')
 
 # --- IMPORT SENDING FUNCTIONS ---
 # These should be your actual implementations that use services like Twilio/SendGrid
-from src.send_whatsapp import send_whatsapp_message
-from src.send_sms import send_sms_message
-from src.send_email import send_email_message
+from send_whatsapp import send_whatsapp_message
+from send_sms import send_sms_message
+from send_email import send_email_message
 
 
 # --- SECURITY & AUTHENTICATION ---
@@ -74,20 +76,19 @@ def login():
 
 
 # --- HELPER FUNCTIONS ---
-def add_communication_history_event(event_type, subject, details, status="Completed"):
-    """Adds a new communication event to the history."""
+def add_communication_history(entry_type, recipient, content):
+    """Adds a communication history entry."""
     history_json = redis.get('communication_history')
     history = json.loads(history_json) if history_json else []
     
-    new_event = {
+    new_entry = {
         "id": str(uuid.uuid4()),
-        "type": event_type,
-        "subject": subject,
-        "timestamp": datetime.utcnow().isoformat(),
-        "status": status,
-        "details": details or []
+        "type": entry_type,
+        "recipient": recipient,
+        "content": content,
+        "timestamp": datetime.utcnow().isoformat()
     }
-    history.insert(0, new_event)
+    history.insert(0, new_entry)
     redis.set('communication_history', json.dumps(history))
 
 
@@ -376,38 +377,26 @@ def report_issue():
     owner_email = settings.get('owner_contact_email')
     owner_name = settings.get('owner_name', 'Owner')
 
+    # Construct the link to the issues page
     base_url = settings.get('report_issue_link', 'http://localhost:9002').rsplit('/report', 1)[0]
     issues_link = f"{base_url}/issues"
     
+    # Prepare messages for different channels
     whatsapp_notification = f"New Issue Reported by {new_issue['reported_by']}, Flat {new_issue['flat_number']}: {new_issue['description'][:80]}... See it here: {issues_link}"
     sms_notification = f"New Issue Reported by {new_issue['reported_by']}, Flat {new_issue['flat_number']}. Description: {new_issue['description']}"
     html_notification = generate_owner_issue_email(new_issue, settings)
-    
-    history_details = []
+
     if owner_whatsapp: 
-        if send_whatsapp_message(owner_whatsapp, whatsapp_notification):
-            history_details.append({"recipient": owner_name, "method": "WhatsApp", "status": "Sent", "content": whatsapp_notification})
-        else:
-            history_details.append({"recipient": owner_name, "method": "WhatsApp", "status": "Failed", "content": whatsapp_notification})
-
+        send_whatsapp_message(owner_whatsapp, whatsapp_notification)
+        add_communication_history("New Issue (WhatsApp)", owner_name, whatsapp_notification)
     if owner_sms:
-        if send_sms_message(owner_sms, sms_notification):
-            history_details.append({"recipient": owner_name, "method": "SMS", "status": "Sent", "content": sms_notification})
-        else:
-            history_details.append({"recipient": owner_name, "method": "SMS", "status": "Failed", "content": sms_notification})
-
+        send_sms_message(owner_sms, sms_notification)
+        add_communication_history("New Issue (SMS)", owner_name, sms_notification)
     if owner_email: 
-        if send_email_message(owner_email, "New Maintenance Issue Reported", html_notification):
-            history_details.append({"recipient": owner_name, "method": "Email", "status": "Sent", "content": f"Subject: New Maintenance Issue Reported"})
-        else:
-            history_details.append({"recipient": owner_name, "method": "Email", "status": "Failed", "content": f"Subject: New Maintenance Issue Reported"})
+        send_email_message(owner_email, "New Maintenance Issue Reported", html_notification)
+        add_communication_history("New Issue (Email)", owner_name, f"Subject: New Maintenance Issue Reported\nBody: {new_issue['description']}")
 
-    add_communication_history_event(
-        "New Issue Notification", 
-        f"Issue from {new_issue['reported_by']}", 
-        history_details
-    )
-
+    
     add_log_entry("Public", f"Issue Reported by {new_issue['reported_by']}: {new_issue['description'][:50]}...")
     return jsonify({"message": "Issue reported successfully."}), 201
 
@@ -423,36 +412,24 @@ def get_dashboard_info(current_user):
         last_run_date = redis.get('last_reminder_date') or "N/A"
         reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
 
-        num_flats = len(flats)
-
-        if num_flats == 0:
-            return jsonify({
-                "current_duty": {"name": "N/A"},
-                "next_in_rotation": {"name": "N/A"},
-                "system_status": {"last_reminder_run": "N/A", "reminders_paused": reminders_paused}
-            })
+        if not flats:
+            return jsonify({"current_duty": {"name": "N/A"}, "next_in_rotation": {"name": "N/A"}, "system_status": {"last_reminder_run": "N/A", "reminders_paused": reminders_paused}})
         
-        if current_index >= num_flats:
+        if current_index >= len(flats):
             current_index = 0
-            redis.set('current_turn_index', 0)
 
         current_person = flats[current_index]
-        
-        # Handle case with only one resident
-        if num_flats == 1:
-            next_person = current_person
-        else:
-            next_person = flats[(current_index + 1) % num_flats]
+        next_person = flats[(current_index + 1) % len(flats)]
 
         dashboard_data = {
-            "current_duty": {"name": current_person.get("name", "N/A")},
-            "next_in_rotation": {"name": next_person.get("name", "N/A")},
+            "current_duty": {"name": current_person["name"]},
+            "next_in_rotation": {"name": next_person["name"]},
             "system_status": {"last_reminder_run": last_run_date, "reminders_paused": reminders_paused}
         }
         return jsonify(dashboard_data)
     except Exception as e:
-        add_log_entry(current_user.get('email', 'System'), f"Error fetching dashboard: {str(e)}")
-        return jsonify({"error": "Failed to fetch dashboard data: " + str(e)}), 500
+        add_log_entry(current_user['email'], f"Error fetching dashboard: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 # RESIDENTS
 @app.route('/api/residents', methods=['GET', 'POST'])
@@ -491,6 +468,7 @@ def update_residents_order(current_user):
     if new_order is None:
         return jsonify({'error': 'No residents data provided'}), 400
 
+    # Basic validation to ensure all residents are still present
     flats_json = redis.get('flats')
     current_flats = json.loads(flats_json) if flats_json else []
     current_ids = {f['id'] for f in current_flats}
@@ -672,19 +650,14 @@ def handle_specific_admin(current_user, admin_id):
         updated_email = ""
         for i, admin in enumerate(admins):
             if admin.get("id") == admin_id:
-                if 'email' in data and data['email']:
-                    admins[i]['email'] = data['email']
                 if 'role' in data:
                     admins[i]['role'] = data['role']
+                    updated_email = admins[i]['email']
                 if 'password' in data and data['password']:
                     admins[i]['password_hash'] = generate_password_hash(data['password'], method='pbkdf2:sha256')
-                
                 admin_found = True
-                updated_email = admins[i]['email']
                 break
-        
         if not admin_found: return jsonify({"error": "Admin not found"}), 404
-        
         redis.set('admins', json.dumps(admins))
         add_log_entry(current_user['email'], f"Admin Updated: {updated_email}")
         return jsonify({"message": "Admin updated successfully"})
@@ -733,6 +706,7 @@ def handle_settings(current_user):
 # CORE ACTIONS
 @app.route('/api/trigger-reminder', methods=['POST'])
 def trigger_reminder():
+    # Allow cron job access without token
     user_email = "System (Cron)"
     if 'x-access-token' in request.headers:
         try:
@@ -744,8 +718,9 @@ def trigger_reminder():
             if current_user:
                 user_email = current_user['email']
         except Exception:
-            pass
+            pass # Token might be invalid or missing, proceed as cron
 
+    # Check if reminders are paused
     reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
     if user_email == "System (Cron)" and reminders_paused:
         add_log_entry("System", "Automatic reminder skipped because reminders are paused.")
@@ -756,7 +731,6 @@ def trigger_reminder():
     flats_json = redis.get('flats')
     flats = json.loads(flats_json) if flats_json else []
     if not flats:
-        add_log_entry(user_email, "Reminder failed: No residents configured.")
         return jsonify({"message": "No residents to remind."}), 400
     
     current_index = int(redis.get('current_turn_index') or 0)
@@ -769,42 +743,27 @@ def trigger_reminder():
     text_message = generate_text_message(template_to_use, person_on_duty, settings)
     html_message = generate_html_message(template_to_use, person_on_duty, settings, "Bin Duty Reminder")
 
-    history_details = []
-    sent_any = False
-    
     contact_info = person_on_duty.get('contact', {})
-    if contact_info.get('whatsapp'):
-        status, content = ("Sent", text_message) if send_whatsapp_message(contact_info['whatsapp'], text_message) else ("Failed", "Twilio credentials may be misconfigured.")
-        history_details.append({"recipient": person_on_duty['name'], "method": "WhatsApp", "status": status, "content": content})
-        if status == "Sent": sent_any = True
-    if contact_info.get('sms'):
-        status, content = ("Sent", text_message) if send_sms_message(contact_info['sms'], text_message) else ("Failed", "BulkSMS credentials may be misconfigured.")
-        history_details.append({"recipient": person_on_duty['name'], "method": "SMS", "status": status, "content": content})
-        if status == "Sent": sent_any = True
-    if contact_info.get('email'):
-        status, content = ("Sent", f"Subject: Bin Duty Reminder") if send_email_message(contact_info['email'], "Bin Duty Reminder", html_message) else ("Failed", "Email (SMTP) credentials may be misconfigured.")
-        history_details.append({"recipient": person_on_duty['name'], "method": "Email", "status": status, "content": content})
-        if status == "Sent": sent_any = True
-
-    event_status = "Completed" if sent_any else "Failed"
-    add_communication_history_event("Reminder", f"To {person_on_duty['name']}", history_details, event_status)
-
-    if sent_any:
-        add_log_entry(user_email, f"Reminder Sent to {person_on_duty['name']}")
-        redis.set('last_reminder_date', date.today().isoformat())
-    else:
-        add_log_entry(user_email, f"Reminder FAILED for {person_on_duty['name']}. Check logs and credentials.")
-
-    if user_email == "System (Cron)" and sent_any:
+    if contact_info.get('whatsapp'): 
+        send_whatsapp_message(contact_info['whatsapp'], text_message)
+        add_communication_history("Reminder (WhatsApp)", person_on_duty['name'], text_message)
+    if contact_info.get('sms'): 
+        send_sms_message(contact_info['sms'], text_message)
+        add_communication_history("Reminder (SMS)", person_on_duty['name'], text_message)
+    if contact_info.get('email'): 
+        send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
+        add_communication_history("Reminder (Email)", person_on_duty['name'], f"Subject: Bin Duty Reminder\nBody: {template_to_use}")
+    
+    redis.set('last_reminder_date', date.today().isoformat())
+    add_log_entry(user_email, f"Reminder Sent to {person_on_duty['name']}")
+    
+    # If it's an automatic run, advance the turn
+    if user_email == "System (Cron)":
         new_index = (current_index + 1) % len(flats)
         redis.set('current_turn_index', new_index)
         add_log_entry("System", "Duty turn automatically advanced.")
 
-    if not sent_any:
-        return jsonify({"message": f"Failed to send reminder to {person_on_duty['name']}. Please check logs and credentials."}), 500
-
     return jsonify({"message": f"Reminder sent to {person_on_duty['name']}."})
-
 
 @app.route('/api/announcements', methods=['POST'])
 @token_required
@@ -828,36 +787,25 @@ def send_announcement(current_user):
     if not recipients:
         return jsonify({"message": "No valid recipients found for the provided IDs."}), 400
 
-    history_details = []
-    all_sent = True
+    recipient_names = []
     for resident in recipients:
+        recipient_names.append(resident['name'])
         text_message = generate_text_message(message_template, resident, settings, subject)
         html_message = generate_html_message(message_template, resident, settings, subject)
         
         contact_info = resident.get('contact', {})
         if contact_info.get('whatsapp'): 
-            if send_whatsapp_message(contact_info['whatsapp'], text_message):
-                history_details.append({"recipient": resident['name'], "method": "WhatsApp", "status": "Sent"})
-            else:
-                history_details.append({"recipient": resident['name'], "method": "WhatsApp", "status": "Failed"})
-                all_sent = False
+            send_whatsapp_message(contact_info['whatsapp'], text_message)
+            add_communication_history(f"Announcement (WhatsApp) - {subject}", resident['name'], text_message)
         if contact_info.get('sms'): 
-            if send_sms_message(contact_info['sms'], text_message):
-                history_details.append({"recipient": resident['name'], "method": "SMS", "status": "Sent"})
-            else:
-                history_details.append({"recipient": resident['name'], "method": "SMS", "status": "Failed"})
-                all_sent = False
+            send_sms_message(contact_info['sms'], text_message)
+            add_communication_history(f"Announcement (SMS) - {subject}", resident['name'], text_message)
         if contact_info.get('email'): 
-            if send_email_message(contact_info['email'], subject, html_message):
-                history_details.append({"recipient": resident['name'], "method": "Email", "status": "Sent"})
-            else:
-                history_details.append({"recipient": resident['name'], "method": "Email", "status": "Failed"})
-                all_sent = False
-    
-    event_status = "Completed" if all_sent else "Partial"
-    add_communication_history_event("Announcement", subject, history_details, event_status)
-    add_log_entry(current_user['email'], f"Announcement Sent: '{subject}' to {len(recipients)} resident(s)")
-    return jsonify({"message": f"Announcement sent to {len(recipients)} resident(s)."})
+            send_email_message(contact_info['email'], subject, html_message)
+            add_communication_history(f"Announcement (Email) - {subject}", resident['name'], message_template)
+            
+    add_log_entry(current_user['email'], f"Announcement Sent: '{subject}' to {len(recipient_names)} resident(s)")
+    return jsonify({"message": f"Announcement sent to {len(recipient_names)} resident(s)."})
 
 @app.route('/api/set-current-turn/<resident_id>', methods=['POST'])
 @token_required
@@ -890,24 +838,6 @@ def skip_turn(current_user):
     
     add_log_entry(current_user['email'], f"Duty Turn Skipped for {skipped_person_name}")
     return jsonify({"message": "Turn skipped successfully."})
-    
-@app.route('/api/advance-turn', methods=['POST'])
-@token_required
-@role_required(['superuser', 'editor'])
-def advance_turn(current_user):
-    flats_json = redis.get('flats')
-    flats = json.loads(flats_json) if flats_json else []
-    if not flats:
-        return jsonify({"message": "No residents in the list to advance."}), 400
-        
-    current_index = int(redis.get('current_turn_index') or 0)
-    current_person_name = flats[current_index % len(flats)]['name']
-    new_index = (current_index + 1) % len(flats)
-    redis.set('current_turn_index', new_index)
-    
-    add_log_entry(current_user['email'], f"Duty Turn Manually Advanced from {current_person_name}")
-    return jsonify({"message": "Turn advanced successfully."})
-
 
 @app.route('/api/toggle-pause', methods=['POST'])
 @token_required
@@ -995,7 +925,5 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-    
 
     
