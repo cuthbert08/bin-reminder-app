@@ -17,8 +17,9 @@ app = Flask(__name__)
 CORS(app)
 
 # Initialize Redis Client
+# Use the environment variables provided by Vercel KV
 redis = Redis(
-    url=os.environ.get('KV_REST_API_URL'),
+    url=os.environ.get('KV_URL'),
     token=os.environ.get('KV_REST_API_TOKEN')
 )
 
@@ -961,3 +962,4 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
