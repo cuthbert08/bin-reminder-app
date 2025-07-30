@@ -425,24 +425,36 @@ def get_dashboard_info(current_user):
         last_run_date = redis.get('last_reminder_date') or "N/A"
         reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
 
-        if not flats:
-            return jsonify({"current_duty": {"name": "N/A"}, "next_in_rotation": {"name": "N/A"}, "system_status": {"last_reminder_run": "N/A", "reminders_paused": reminders_paused}})
+        num_flats = len(flats)
+
+        if num_flats == 0:
+            return jsonify({
+                "current_duty": {"name": "N/A"},
+                "next_in_rotation": {"name": "N/A"},
+                "system_status": {"last_reminder_run": "N/A", "reminders_paused": reminders_paused}
+            })
         
-        if current_index >= len(flats):
+        if current_index >= num_flats:
             current_index = 0
+            redis.set('current_turn_index', 0)
 
         current_person = flats[current_index]
-        next_person = flats[(current_index + 1) % len(flats)]
+        
+        # Handle case with only one resident
+        if num_flats == 1:
+            next_person = current_person
+        else:
+            next_person = flats[(current_index + 1) % num_flats]
 
         dashboard_data = {
-            "current_duty": {"name": current_person["name"]},
-            "next_in_rotation": {"name": next_person["name"]},
+            "current_duty": {"name": current_person.get("name", "N/A")},
+            "next_in_rotation": {"name": next_person.get("name", "N/A")},
             "system_status": {"last_reminder_run": last_run_date, "reminders_paused": reminders_paused}
         }
         return jsonify(dashboard_data)
     except Exception as e:
-        add_log_entry(current_user['email'], f"Error fetching dashboard: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        add_log_entry(current_user.get('email', 'System'), f"Error fetching dashboard: {str(e)}")
+        return jsonify({"error": "Failed to fetch dashboard data: " + str(e)}), 500
 
 # RESIDENTS
 @app.route('/api/residents', methods=['GET', 'POST'])
@@ -985,5 +997,7 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+    
 
     
