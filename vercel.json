@@ -14,7 +14,7 @@
   "crons": [
     {
       "path": "/api/trigger-reminder",
-      "schedule": "45 5 * * 3"
+      "schedule": "47 5 * * 3"
     }
   ]
 }
