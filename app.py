@@ -650,14 +650,19 @@ def handle_specific_admin(current_user, admin_id):
         updated_email = ""
         for i, admin in enumerate(admins):
             if admin.get("id") == admin_id:
+                if 'email' in data and data['email']:
+                    admins[i]['email'] = data['email']
                 if 'role' in data:
                     admins[i]['role'] = data['role']
-                    updated_email = admins[i]['email']
                 if 'password' in data and data['password']:
                     admins[i]['password_hash'] = generate_password_hash(data['password'], method='pbkdf2:sha256')
+                
                 admin_found = True
+                updated_email = admins[i]['email']
                 break
+        
         if not admin_found: return jsonify({"error": "Admin not found"}), 404
+        
         redis.set('admins', json.dumps(admins))
         add_log_entry(current_user['email'], f"Admin Updated: {updated_email}")
         return jsonify({"message": "Admin updated successfully"})
