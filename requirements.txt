@@ -1,14 +1,3 @@
-
-Flask
-requests
-twilio
-python-dotenv
-upstash-redis
-redis
-Flask-Cors
-Werkzeug
-PyJWT
-vercel-blob
 Flask
 Flask-Cors
 PyJWT
@@ -16,5 +5,9 @@ Werkzeug
 gunicorn
 python-dotenv
 upstash-redis
-vercel-blob
+requests
+twilio
 sendgrid
+vercel-blob
+
+    

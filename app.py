@@ -16,11 +16,9 @@ from functools import wraps
 app = Flask(__name__)
 CORS(app)
 
-# Initialize Redis Client
-redis = Redis(
-    url=os.environ.get('KV_REST_API_URL'),
-    token=os.environ.get('KV_REST_API_TOKEN')
-)
+# Initialize Upstash Redis Client
+redis = Redis.from_url(os.environ.get("UPSTASH_REDIS_REST_URL"), os.environ.get("UPSTASH_REDIS_REST_TOKEN"))
+
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', 'default-super-secret-key-for-testing')
 
@@ -795,7 +793,7 @@ def trigger_reminder():
         add_log_entry(user_email, f"Reminder Sent to {person_on_duty['name']}")
         redis.set('last_reminder_date', date.today().isoformat())
     else:
-        add_log_entry(user_email, f"Reminder FAILED for {person_on_duty['name']}. Check credentials.")
+        add_log_entry(user_email, f"Reminder FAILED for {person_on_duty['name']}. Check logs and credentials.")
 
     if user_email == "System (Cron)" and sent_any:
         new_index = (current_index + 1) % len(flats)
@@ -999,5 +997,9 @@ if __name__ == '__main__':
     app.run(debug=True)
 
     
+
+    
+
+
 
     
