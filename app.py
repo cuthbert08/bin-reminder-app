@@ -76,6 +76,21 @@ def login():
 
 
 # --- HELPER FUNCTIONS ---
+def add_communication_history(entry_type, recipient, content):
+    """Adds a communication history entry."""
+    history_json = redis.get('communication_history')
+    history = json.loads(history_json) if history_json else []
+    
+    new_entry = {
+        "id": str(uuid.uuid4()),
+        "type": entry_type,
+        "recipient": recipient,
+        "content": content,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    history.insert(0, new_entry)
+    redis.set('communication_history', json.dumps(history))
+
 
 def add_log_entry(user_email, action_description):
     """Adds a log entry as a formatted string to the database."""
@@ -360,6 +375,7 @@ def report_issue():
     owner_whatsapp = settings.get('owner_contact_whatsapp')
     owner_sms = settings.get('owner_contact_number')
     owner_email = settings.get('owner_contact_email')
+    owner_name = settings.get('owner_name', 'Owner')
 
     # Construct the link to the issues page
     base_url = settings.get('report_issue_link', 'http://localhost:9002').rsplit('/report', 1)[0]
@@ -372,10 +388,14 @@ def report_issue():
 
     if owner_whatsapp: 
         send_whatsapp_message(owner_whatsapp, whatsapp_notification)
+        add_communication_history("New Issue (WhatsApp)", owner_name, whatsapp_notification)
     if owner_sms:
         send_sms_message(owner_sms, sms_notification)
+        add_communication_history("New Issue (SMS)", owner_name, sms_notification)
     if owner_email: 
         send_email_message(owner_email, "New Maintenance Issue Reported", html_notification)
+        add_communication_history("New Issue (Email)", owner_name, f"Subject: New Maintenance Issue Reported\nBody: {new_issue['description']}")
+
     
     add_log_entry("Public", f"Issue Reported by {new_issue['reported_by']}: {new_issue['description'][:50]}...")
     return jsonify({"message": "Issue reported successfully."}), 201
@@ -662,11 +682,17 @@ def handle_settings(current_user):
     def get(current_user):
         settings_json = redis.get('settings')
         settings = json.loads(settings_json) if settings_json else {}
+        reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
+        settings['reminders_paused'] = reminders_paused
         return jsonify(settings)
 
     @role_required(['superuser'])
     def put(current_user):
         new_settings = request.get_json()
+        if 'reminders_paused' in new_settings:
+            redis.set('reminders_paused', json.dumps(new_settings['reminders_paused']))
+            del new_settings['reminders_paused']
+        
         redis.set('settings', json.dumps(new_settings))
         add_log_entry(current_user['email'], f"Settings Updated: {', '.join(new_settings.keys())}")
         return jsonify(new_settings)
@@ -679,11 +705,28 @@ def handle_settings(current_user):
 
 # CORE ACTIONS
 @app.route('/api/trigger-reminder', methods=['POST'])
-@token_required
-@role_required(['superuser', 'editor'])
-def trigger_reminder(current_user):
-    data = request.get_json()
-    custom_template = data.get('message') if data else None
+def trigger_reminder():
+    # Allow cron job access without token
+    user_email = "System (Cron)"
+    if 'x-access-token' in request.headers:
+        try:
+            token = request.headers['x-access-token']
+            data = jwt.decode(token, JWT_SECRET_KEY, algorithms=["HS256"])
+            admins_json = redis.get('admins')
+            admins = json.loads(admins_json) if admins_json else []
+            current_user = next((admin for admin in admins if admin['id'] == data['id']), None)
+            if current_user:
+                user_email = current_user['email']
+        except Exception:
+            pass # Token might be invalid or missing, proceed as cron
+
+    # Check if reminders are paused
+    reminders_paused = json.loads(redis.get('reminders_paused') or 'false')
+    if user_email == "System (Cron)" and reminders_paused:
+        add_log_entry("System", "Automatic reminder skipped because reminders are paused.")
+        return jsonify({"message": "Reminders are paused, automatic reminder skipped."}), 200
+
+    custom_template = request.get_json().get('message') if request.is_json else None
 
     flats_json = redis.get('flats')
     flats = json.loads(flats_json) if flats_json else []
@@ -695,21 +738,31 @@ def trigger_reminder(current_user):
     settings_json = redis.get('settings')
     settings = json.loads(settings_json) if settings_json else {}
 
-    # Use custom message if provided, otherwise use the saved template
     template_to_use = custom_template or settings.get("reminder_template", "Reminder: It's your turn for bin duty.")
     
-    # Generate formatted messages
     text_message = generate_text_message(template_to_use, person_on_duty, settings)
     html_message = generate_html_message(template_to_use, person_on_duty, settings, "Bin Duty Reminder")
 
-    # Send messages
     contact_info = person_on_duty.get('contact', {})
-    if contact_info.get('whatsapp'): send_whatsapp_message(contact_info['whatsapp'], text_message)
-    if contact_info.get('sms'): send_sms_message(contact_info['sms'], text_message)
-    if contact_info.get('email'): send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
+    if contact_info.get('whatsapp'): 
+        send_whatsapp_message(contact_info['whatsapp'], text_message)
+        add_communication_history("Reminder (WhatsApp)", person_on_duty['name'], text_message)
+    if contact_info.get('sms'): 
+        send_sms_message(contact_info['sms'], text_message)
+        add_communication_history("Reminder (SMS)", person_on_duty['name'], text_message)
+    if contact_info.get('email'): 
+        send_email_message(contact_info['email'], "Bin Duty Reminder", html_message)
+        add_communication_history("Reminder (Email)", person_on_duty['name'], f"Subject: Bin Duty Reminder\nBody: {template_to_use}")
     
     redis.set('last_reminder_date', date.today().isoformat())
-    add_log_entry(current_user['email'], f"Reminder Sent to {person_on_duty['name']}")
+    add_log_entry(user_email, f"Reminder Sent to {person_on_duty['name']}")
+    
+    # If it's an automatic run, advance the turn
+    if user_email == "System (Cron)":
+        new_index = (current_index + 1) % len(flats)
+        redis.set('current_turn_index', new_index)
+        add_log_entry("System", "Duty turn automatically advanced.")
+
     return jsonify({"message": f"Reminder sent to {person_on_duty['name']}."})
 
 @app.route('/api/announcements', methods=['POST'])
@@ -729,7 +782,6 @@ def send_announcement(current_user):
     settings_json = redis.get('settings')
     settings = json.loads(settings_json) if settings_json else {}
     
-    # Filter residents based on the provided IDs
     recipients = [flat for flat in all_flats if flat.get('id') in resident_ids]
     
     if not recipients:
@@ -738,15 +790,20 @@ def send_announcement(current_user):
     recipient_names = []
     for resident in recipients:
         recipient_names.append(resident['name'])
-        # Generate formatted messages for each resident
         text_message = generate_text_message(message_template, resident, settings, subject)
         html_message = generate_html_message(message_template, resident, settings, subject)
         
         contact_info = resident.get('contact', {})
-        if contact_info.get('whatsapp'): send_whatsapp_message(contact_info['whatsapp'], text_message)
-        if contact_info.get('sms'): send_sms_message(contact_info['sms'], text_message)
-        if contact_info.get('email'): send_email_message(contact_info['email'], subject, html_message)
-        
+        if contact_info.get('whatsapp'): 
+            send_whatsapp_message(contact_info['whatsapp'], text_message)
+            add_communication_history(f"Announcement (WhatsApp) - {subject}", resident['name'], text_message)
+        if contact_info.get('sms'): 
+            send_sms_message(contact_info['sms'], text_message)
+            add_communication_history(f"Announcement (SMS) - {subject}", resident['name'], text_message)
+        if contact_info.get('email'): 
+            send_email_message(contact_info['email'], subject, html_message)
+            add_communication_history(f"Announcement (Email) - {subject}", resident['name'], message_template)
+            
     add_log_entry(current_user['email'], f"Announcement Sent: '{subject}' to {len(recipient_names)} resident(s)")
     return jsonify({"message": f"Announcement sent to {len(recipient_names)} resident(s)."})
 
@@ -793,6 +850,33 @@ def toggle_pause(current_user):
     add_log_entry(current_user['email'], f"Reminders Toggled: {status_text}")
     return jsonify({"message": f"Reminders are now {status_text}.", "reminders_paused": new_status})
 
+# HISTORY
+@app.route('/api/history', methods=['GET', 'DELETE'])
+@token_required
+@role_required(['superuser', 'editor'])
+def handle_history(current_user):
+    if request.method == 'GET':
+        history_json = redis.get('communication_history')
+        history = json.loads(history_json) if history_json else []
+        return jsonify(history)
+
+    if request.method == 'DELETE':
+        data = request.get_json()
+        ids_to_delete = data.get('ids', [])
+        if not ids_to_delete:
+            return jsonify({'message': 'No IDs provided'}), 400
+
+        history_json = redis.get('communication_history')
+        history = json.loads(history_json) if history_json else []
+        
+        original_len = len(history)
+        history = [item for item in history if item.get('id') not in ids_to_delete]
+        
+        redis.set('communication_history', json.dumps(history))
+        add_log_entry(current_user['email'], f"Deleted {original_len - len(history)} history item(s)")
+        return jsonify({'message': 'History items deleted successfully'})
+
+
 # This is a one-time setup route, you might want to protect or remove it in production.
 @app.route('/api/initialize-data')
 def initialize_data():
@@ -827,6 +911,8 @@ def initialize_data():
             redis.set('issues', json.dumps([]))
         if not redis.exists('logs'):
             redis.set('logs', json.dumps([]))
+        if not redis.exists('communication_history'):
+            redis.set('communication_history', json.dumps([]))
         if not redis.exists('current_turn_index'):
             redis.set('current_turn_index', 0)
         if not redis.exists('reminders_paused'):
@@ -839,5 +925,3 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-    
