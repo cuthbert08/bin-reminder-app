@@ -87,7 +87,7 @@ def add_communication_history_event(event_type, subject, details, status="Comple
         "subject": subject,
         "timestamp": datetime.utcnow().isoformat(),
         "status": status,
-        "details": details 
+        "details": details or []
     }
     history.insert(0, new_event)
     redis.set('communication_history', json.dumps(history))
@@ -985,3 +985,5 @@ def initialize_data():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+    
